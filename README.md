@@ -51,14 +51,34 @@ make patch
 ### Постоянный фикс (systemd timer)
 
 ```bash
-sudo make install
+make install
+```
+
+Скрипт поддерживает режимы установки:
+
+- `MODE=auto` (по умолчанию):
+  - если доступен system scope (`systemctl`), ставит глобальные юниты;
+  - если system scope недоступен (типичный podman/container), ставит user-юниты через `systemctl --user`.
+- `MODE=system`: принудительно в `/etc/systemd/system` (обычно через `sudo`).
+- `MODE=user`: принудительно в `~/.config/systemd/user`.
+
+Примеры:
+
+```bash
+make install MODE=user
+sudo make install MODE=system
 ```
 
 Установит:
 
-- `/usr/local/sbin/vscode-ollama-cloud-patch.py`
-- `/etc/systemd/system/vscode-ollama-cloud-patch.service`
-- `/etc/systemd/system/vscode-ollama-cloud-patch.timer`
+- для `MODE=system`:
+  - `/usr/local/sbin/vscode-ollama-cloud-patch.py`
+  - `/etc/systemd/system/vscode-ollama-cloud-patch.service`
+  - `/etc/systemd/system/vscode-ollama-cloud-patch.timer`
+- для `MODE=user`:
+  - `~/.local/bin/vscode-ollama-cloud-patch.py`
+  - `~/.config/systemd/user/vscode-ollama-cloud-patch.service`
+  - `~/.config/systemd/user/vscode-ollama-cloud-patch.timer`
 
 Расписание timer:
 
@@ -70,12 +90,14 @@ sudo make install
 
 ```bash
 make status
+make status MODE=user
 ```
 
 ### Удаление
 
 ```bash
-sudo make uninstall
+make uninstall MODE=user
+sudo make uninstall MODE=system
 ```
 
 ---
@@ -95,7 +117,7 @@ vscode-patch/
 
 ## Откат
 
-1. `sudo make uninstall` — снимет timer/service и удалит helper.
+1. `make uninstall MODE=user` или `sudo make uninstall MODE=system` — снимет timer/service и удалит helper.
 2. Восстановить исходный `package.json` из соседнего `.bak`:
 
 ```bash
