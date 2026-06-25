@@ -2,7 +2,7 @@
 
 Минимальный набор скриптов, который добавляет поле **`apiKey`** в манифест провайдера `ollama` расширения Copilot Chat для VS Code. Без этого поля Ollama Cloud отдает `401 Unauthorized`, а каждое обновление VS Code/Copilot вайпит правки в `package.json`.
 
-Решение — идемпотентный патчер + systemd timer, который перенакатывает патч после обновлений.
+Решение — идемпотентный патчер + автоматическое перенакатывание после обновлений. Бэкенд персистентности выбирается автоматически под окружение: системный systemd-timer, пользовательский systemd-timer или shell-hook (для контейнеров/distrobox без работающего systemd).
 
 ---
 
@@ -42,69 +42,119 @@
 
 ## Использование
 
+### Быстрый выбор команды
+
+Если не хотите разбираться в деталях:
+
+1. `make patch` — применить патч прямо сейчас (работает всегда)
+2. `make install` — настроить автоприменение (timer или shell-hook — выберется само)
+3. `make status` — проверить: применён ли патч + какой backend активен
+4. `make uninstall` — удалить всё
+
+Полный список: `make help-all`.
+
 ### Разовый патч
 
 ```bash
 make patch
 ```
 
-### Постоянный фикс (systemd timer)
+Если целевые `package.json` принадлежат root (системная установка VS Code),
+применяйте через `sudo`:
+
+```bash
+sudo make patch
+```
+
+### Постоянный фикс
 
 ```bash
 make install
 ```
 
-Скрипт поддерживает режимы установки:
+`install` выбирает **backend персистентности** автоматически и сразу применяет
+патч. Если доступен passwordless `sudo`, системные файлы патчатся через него.
 
-- `MODE=auto` (по умолчанию):
-  - если доступен system scope (`systemctl`), ставит глобальные юниты;
-  - если system scope недоступен (типичный podman/container), ставит user-юниты через `systemctl --user`.
-- `MODE=system`: принудительно в `/etc/systemd/system` (обычно через `sudo`).
-- `MODE=user`: принудительно в `~/.config/systemd/user`.
+Доступные backend'ы (выбирается первый рабочий):
 
-Примеры:
+- **`system`** — root + работающий системный systemd → service+timer в `/etc/systemd/system`.
+- **`user`** — работающий пользовательский systemd (`--user`) → service+timer в `~/.config/systemd/user`.
+- **`shell`** — systemd недоступен (контейнер/distrobox) → hook в `~/.bashrc`, перенакат патча на старте shell.
+
+Режим можно задать явно через `MODE`; если выбранный backend недоступен,
+происходит автоматический fallback к следующему рабочему:
 
 ```bash
-make install MODE=user
-sudo make install MODE=system
+make install MODE=auto    # по умолчанию: system -> user -> shell
+make install MODE=system  # если нет root/systemd -> user -> shell
+make install MODE=user    # если user systemd offline -> shell
+make install MODE=shell   # всегда shell-hook
 ```
 
-Установит:
-
-- для `MODE=system`:
-  - `/usr/local/sbin/vscode-ollama-cloud-patch.py`
-  - `/etc/systemd/system/vscode-ollama-cloud-patch.service`
-  - `/etc/systemd/system/vscode-ollama-cloud-patch.timer`
-- для `MODE=user`:
-  - `~/.local/bin/vscode-ollama-cloud-patch.py`
-  - `~/.config/systemd/user/vscode-ollama-cloud-patch.service`
-  - `~/.config/systemd/user/vscode-ollama-cloud-patch.timer`
-
-Расписание timer:
+Расписание systemd-timer (для backend `system`/`user`):
 
 - `OnBootSec=2min` — через 2 минуты после загрузки
 - `OnUnitActiveSec=30min` — далее каждые 30 минут
 - `Persistent=true` — догонит пропущенный запуск
 
+> В distrobox и подобных контейнерах systemd обычно в состоянии `offline`
+> (отвечает на запросы, но не запускает юниты). Инструмент честно это
+> определяет и переключается на shell-hook — никаких "тихих" зависших
+> таймеров. Команды никогда не падают из-за недоступной шины systemd.
+
 ### Проверка
 
 ```bash
 make status
-make status MODE=user
 ```
+
+`status` показывает: применён ли патч к каждому целевому файлу, какие backend'ы
+доступны и какие файлы установлены. Только проверку патча (без systemd-деталей)
+можно получить напрямую:
+
+```bash
+python3 scripts/vscode-ollama-cloud-patch.py --check
+```
+
+### Управление systemd-сервисом (svc-*)
+
+Команды управления выделены в префикс `svc-`, чтобы не путаться с базовыми
+(`install`/`status`/`uninstall`/`patch`).
+
+```bash
+make svc-status MODE=user     # systemctl is-enabled/status/list-timers для service + timer
+make svc-enable MODE=user     # включить и запустить timer
+make svc-disable MODE=user    # выключить и остановить timer
+make svc-start MODE=user      # запустить oneshot-service немедленно
+make svc-stop MODE=user       # остановить timer и service
+make svc-restart MODE=user    # перезапустить timer и повторно запустить service
+```
+
+`make svc-status` — прямой вызов `systemctl is-enabled`, `list-unit-files`,
+`list-timers --all` и `status` для `vscode-ollama-cloud-patch.service` и
+`vscode-ollama-cloud-patch.timer` — то же самое, как если бы вы запустили эти
+команды руками. `make status` показывает сводный отчёт (патч + backend'ы +
+файлы) — это другая команда.
+
+Применимы для backend'ов `system`/`user` (при работающем systemd).
+В режиме `shell` (distrobox без systemd) `svc-start`/`svc-restart` перенакатывают
+патч напрямую, остальные — no-op с понятным сообщением. Для принудительного
+scope передавайте `MODE=system` или `MODE=user`.
 
 ### Удаление
 
 ```bash
-make uninstall MODE=user
-sudo make uninstall MODE=system
+make uninstall
 ```
+
+`uninstall` — best-effort очистка по всем backend'ам сразу (system units, user
+units, helper, shell-hook). Никогда не падает, даже если systemd недоступен.
 
 ---
 
 ## Структура
 
-```
+```text
 vscode-patch/
 ├── Makefile
 ├── README.md
@@ -117,7 +167,7 @@ vscode-patch/
 
 ## Откат
 
-1. `make uninstall MODE=user` или `sudo make uninstall MODE=system` — снимет timer/service и удалит helper.
+1. `make uninstall` — снимет timer/service/hook по всем backend'ам и удалит helper.
 2. Восстановить исходный `package.json` из соседнего `.bak`:
 
 ```bash
